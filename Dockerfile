@@ -1,29 +1,21 @@
-# Stage 0: Build Assets (Inalterado)
-FROM node:16-alpine AS builder
-WORKDIR /app
-COPY . ./
-RUN yarn install --frozen-lockfile --network-timeout 1000000 \
-    && yarn run build:production
-
-# Stage 1: Runtime
+# Usamos apenas o PHP agora, pulando o estágio do Node/Yarn
 FROM php:8.3-fpm-alpine
 WORKDIR /app
 
-# Instalação de dependências e ferramentas necessárias
+# Dependências do Sistema
 RUN apk add --no-cache --update \
     ca-certificates dcron curl git supervisor tar unzip nginx \
     libpng-dev libxml2-dev libzip-dev \
     && docker-php-ext-configure zip \
     && docker-php-ext-install bcmath gd pdo_mysql zip
 
-# --- CORREÇÃO AQUI: Instalando Composer via CURL em vez de COPY ---
+# Instalação do Composer
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
-# Copia os arquivos do projeto
+# Copia TODOS os arquivos (incluindo a pasta public/assets que você buildou localmente)
 COPY . ./
-COPY --from=builder /app/public/assets ./public/assets
 
-# Configuração de permissões
+# Configuração de permissões e dependências PHP
 RUN mkdir -p bootstrap/cache/ storage/logs storage/framework/sessions storage/framework/views storage/framework/cache \
     && chmod 777 -R bootstrap storage \
     && composer install --no-dev --optimize-autoloader \

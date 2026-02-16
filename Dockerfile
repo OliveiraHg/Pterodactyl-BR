@@ -3,7 +3,7 @@
 # since we won't need NodeJS anymore in the future. This Docker image ships a final production
 # level distribution of Pterodactyl.
 # FROM --platform=$TARGETOS/$TARGETARCH mhart/alpine-node:14
-FROM node:18
+FROM node:14
 WORKDIR /app
 COPY . ./
 RUN yarn install --frozen-lockfile \

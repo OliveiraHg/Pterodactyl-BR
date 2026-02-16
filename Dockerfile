@@ -1,42 +1,53 @@
-# Stage 0:
-# Build the assets that are needed for the frontend. This build stage is then discarded
-# since we won't need NodeJS anymore in the future. This Docker image ships a final production
-# level distribution of Pterodactyl.
-# FROM --platform=$TARGETOS/$TARGETARCH mhart/alpine-node:14
-FROM node:14
+# Stage 0: Build Assets (Frontend)
+FROM --platform=$TARGETOS/$TARGETARCH node:16-alpine AS builder
 WORKDIR /app
 COPY . ./
-RUN yarn install --frozen-lockfile \
+# Usando --network-timeout para evitar erros em conexões lentas no build do Render
+RUN yarn install --frozen-lockfile --network-timeout 1000000 \
     && yarn run build:production
 
-# Stage 1:
-# Build the actual container with all of the needed PHP dependencies that will run the application.
+# Stage 1: Runtime (PHP + Nginx)
 FROM --platform=$TARGETOS/$TARGETARCH php:8.3-fpm-alpine
 WORKDIR /app
-COPY . ./
-COPY --from=0 /app/public/assets ./public/assets
-RUN apk add --no-cache --update ca-certificates dcron curl git supervisor tar unzip nginx libpng-dev libxml2-dev libzip-dev certbot certbot-nginx \
+
+# Instalação de dependências do sistema
+RUN apk add --no-cache --update \
+    ca-certificates dcron curl git supervisor tar unzip nginx \
+    libpng-dev libxml2-dev libzip-dev \
     && docker-php-ext-configure zip \
-    && docker-php-ext-install bcmath gd pdo_mysql zip \
-    && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
-    && cp .env.example .env \
-    && mkdir -p bootstrap/cache/ storage/logs storage/framework/sessions storage/framework/views storage/framework/cache \
+    && docker-php-ext-install bcmath gd pdo_mysql zip
+
+# Composer
+COPY --from=composer:latest /usr/local/bin/composer /usr/local/bin/composer
+
+# Copia os arquivos do projeto
+COPY . ./
+# Copia apenas os assets compilados do Stage 0
+COPY --from=builder /app/public/assets ./public/assets
+
+# Configuração de permissões e diretórios
+RUN mkdir -p bootstrap/cache/ storage/logs storage/framework/sessions storage/framework/views storage/framework/cache \
     && chmod 777 -R bootstrap storage \
     && composer install --no-dev --optimize-autoloader \
-    && rm -rf .env bootstrap/cache/*.php \
-    && mkdir -p /app/storage/logs/ \
     && chown -R nginx:nginx .
 
-RUN rm /usr/local/etc/php-fpm.conf \
-    && echo "* * * * * /usr/local/bin/php /app/artisan schedule:run >> /dev/null 2>&1" >> /var/spool/cron/crontabs/root \
-    && echo "0 23 * * * certbot renew --nginx --quiet" >> /var/spool/cron/crontabs/root \
-    && sed -i s/ssl_session_cache/#ssl_session_cache/g /etc/nginx/nginx.conf \
-    && mkdir -p /var/run/php /var/run/nginx
+# Ajuste do Nginx para usar a variável PORT do Render
+# Removemos a porta fixa 80 e colocamos um placeholder que o entrypoint substituirá
+RUN sed -i 's/listen 80;/listen ${PORT};/g' /etc/nginx/http.d/default.conf || true
 
+# Configurações de processo
 COPY .github/docker/default.conf /etc/nginx/http.d/default.conf
 COPY .github/docker/www.conf /usr/local/etc/php-fpm.conf
 COPY .github/docker/supervisord.conf /etc/supervisord.conf
 
-EXPOSE 80 443
-ENTRYPOINT [ "/bin/ash", ".github/docker/entrypoint.sh" ]
-CMD [ "supervisord", "-n", "-c", "/etc/supervisord.conf" ]
+# Script de inicialização customizado para o Render
+RUN echo '#!/bin/sh\n\
+sed -i "s/listen 80;/listen ${PORT};/g" /etc/nginx/http.d/default.conf\n\
+php artisan migrate --force\n\
+exec supervisord -n -c /etc/supervisord.conf' > /app/render-entrypoint.sh \
+    && chmod +x /app/render-entrypoint.sh
+
+# O Render usa uma porta dinâmica, mas informamos a 80 como referência interna
+EXPOSE 80
+
+ENTRYPOINT [ "/bin/sh", "/app/render-entrypoint.sh" ]
